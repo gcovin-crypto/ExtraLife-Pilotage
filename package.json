@@ -1,0 +1,33 @@
+{
+  "name": "extralife-pilotage",
+  "version": "2.0.0",
+  "private": true,
+  "description": "ExtraLife Formation — plateforme unifiée : pilotage commercial & financier, demandes LonaSanté, carte des départements.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "vite build",
+    "dev:front": "vite",
+    "dev:api": "node server.js",
+    "import:xlsx": "node import-xlsx.js",
+    "ingest:email": "node ingest-email.js",
+    "creer-admin": "node creer-admin.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "imapflow": "^1.0.171",
+    "lucide-react": "^0.383.0",
+    "mailparser": "^3.7.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.12.7",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.3.4"
+  },
+  "engines": { "node": ">=22" }
+}
