@@ -23,7 +23,7 @@ module.exports = async function imapTest(_req, res) {
     let rows = '', total = 0, shown = 0;
     try {
       total = (client.mailbox && client.mailbox.exists) || 0;
-      const from = Math.max(1, total - 8 + 1);
+      const from = Math.max(1, total - 20 + 1);
       for await (const msg of client.fetch(total ? `${from}:*` : '1:*', { source: true })) {
         shown++;
         const parsed = await simpleParser(msg.source);
@@ -35,7 +35,14 @@ module.exports = async function imapTest(_req, res) {
         const cp = findVal('codepostal') || findVal('postal');
         const nb = findVal('nombredepersonnes') || findVal('candidats') || findVal('participants');
         const lead = leadFromEmail(parsed);
-        let verdict, detail = `<br><small style="color:#64748b">code postal détecté : ${cp ? esc(cp) : '<i>aucun</i>'} · nombre : ${nb ? esc(nb) : '<i>aucun</i>'}</small>`;
+        // Date du message et mois qui en découle : c'est ce qui range la demande sur la carte.
+        const dEnt = parsed.date ? new Date(parsed.date) : null;
+        const dLead = lead ? new Date(lead.receivedAt) : null;
+        const fmt = d => d && !isNaN(d) ? d.toISOString().slice(0, 19).replace('T', ' ') : 'absente';
+        let verdict, detail = `<br><small style="color:#64748b">code postal détecté : ${cp ? esc(cp) : '<i>aucun</i>'} · nombre : ${nb ? esc(nb) : '<i>aucun</i>'}</small>`
+          + `<br><small style="color:#0f766e">date de l'e-mail : <b>${fmt(dEnt)}</b>`
+          + (lead ? ` · rangée dans le mois <b>${esc(lead.monthKey)}</b>` : '')
+          + `</small>`;
         if (!matchFilter) verdict = `<span class=ko>ignoré : l'objet ne contient pas « ${esc(filter)} »</span>`;
         else if (lead) verdict = `<span class=ok>OK → département ${lead.dept}, ${lead.candidats} pers. (${lead.isGroup ? 'groupe' : 'individuel'})</span>`;
         else verdict = `<span class=ko>non exploitable (pas de code postal français valide, ou demande étrangère)</span>`;

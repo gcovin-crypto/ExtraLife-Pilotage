@@ -622,7 +622,10 @@ function setStatus(kind, txt){
 }
 function applyPayload(p){
   // géométrie conservée ; on remplace uniquement les données dynamiques
+  const premierChargement = !APP.monthKeys || !APP.monthKeys.length;
   APP.months=p.months; APP.monthKeys=p.monthKeys; APP.data=p.data; APP.rows=p.rows||APP.rows||[];
+  // Au premier affichage, on se place sur le mois le plus récent, pas le plus ancien.
+  if(premierChargement && APP.monthKeys.length) curMonth=APP.monthKeys.length-1;
   APP.domNames=p.domNames||APP.domNames;
   if(curMonth>=APP.monthKeys.length) curMonth=APP.monthKeys.length-1;
   buildTabs();
