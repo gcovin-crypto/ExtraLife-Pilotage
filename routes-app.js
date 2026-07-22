@@ -259,6 +259,38 @@ router.post('/api/state/restore/:id', requireRole('admin'), (req, res) => {
   res.json(A.saveState(row.data, A.getState().version, who));
 });
 
+/* --- entretien : retrait de l'import Excel initial --- */
+
+// Les 639 demandes de l'import Excel portent des clés « id:seed:N » ; celles
+// issues de Gmail portent l'identifiant du message. Les deux ne peuvent pas se
+// dédoublonner entre elles. Si la relève Gmail couvre la même période, cette
+// route retire l'import initial pour ne garder que la source Gmail.
+router.get('/api/leads/purge-seed', requireRole('admin'), (req, res) => {
+  const { db } = require('./db');
+  const n = Number(db.prepare("SELECT COUNT(*) AS n FROM leads WHERE dedup_key LIKE 'id:seed:%'").get().n);
+  const total = Number(db.prepare('SELECT COUNT(*) AS n FROM leads').get().n);
+  if (String(req.query.confirm || '') !== 'oui') {
+    res.type('html').send(
+      `<div style="font:15px/1.6 system-ui;max-width:640px;margin:60px auto;padding:0 20px">
+       <h2>Retrait de l'import Excel initial</h2>
+       <p><b>${n}</b> demandes proviennent de l'import Excel, sur <b>${total}</b> au total.</p>
+       <p>Ne faites ceci que si la relève Gmail couvre bien la même période, sinon vous perdrez
+       définitivement l'historique de début 2025.</p>
+       <p><a href="/api/leads/purge-seed?confirm=oui"
+       style="display:inline-block;background:#e02436;color:#fff;padding:10px 18px;border-radius:8px;
+       text-decoration:none;font-weight:600">Confirmer le retrait des ${n} demandes</a></p>
+       <p style="color:#667085;font-size:13px">Action définitive. L'import reste disponible dans
+       le fichier seed.json du dépôt.</p></div>`);
+    return;
+  }
+  const info = db.prepare("DELETE FROM leads WHERE dedup_key LIKE 'id:seed:%'").run();
+  res.type('html').send(
+    `<div style="font:15px/1.6 system-ui;max-width:640px;margin:60px auto;padding:0 20px">
+     <h2>${Number(info.changes)} demandes retirées</h2>
+     <p>Il reste <b>${Number(db.prepare('SELECT COUNT(*) AS n FROM leads').get().n)}</b> demandes,
+     toutes issues de Gmail. Rechargez la carte.</p></div>`);
+});
+
 /* --- demandes LonaSanté --- */
 
 router.get('/api/leads', requireAuth, (req, res) => {

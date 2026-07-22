@@ -19,6 +19,24 @@ module.exports = async function imapTest(_req, res) {
   const client = new ImapFlow({ host, port: +(process.env.IMAP_PORT || 993), secure: true, auth: { user, pass }, logger: false });
   try {
     await client.connect();
+    // Inventaire des dossiers : Gmail expose chaque libellé comme un dossier IMAP.
+    let dossiers = '';
+    try {
+      const liste = await client.list();
+      const lignes = [];
+      for (const d of liste) {
+        if (d.flags && (d.flags.has ? d.flags.has('\\Noselect') : false)) continue;
+        let n = '?';
+        try { const st = await client.status(d.path, { messages: true }); n = st.messages; } catch {}
+        lignes.push(`<tr><td><code>${esc(d.path)}</code></td><td style="text-align:right"><b>${n}</b></td></tr>`);
+      }
+      dossiers = `<h3 style="margin-top:26px">Dossiers disponibles sur ce compte</h3>
+        <p style="color:#64748b;font-size:13px">Recopiez le chemin voulu dans la variable <code>IMAP_MAILBOX</code>.</p>
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <tr><th style="text-align:left">Dossier</th><th style="text-align:right">Messages</th></tr>
+        ${lignes.join('')}</table>`;
+    } catch (e) { dossiers = `<p class=ko>Impossible de lister les dossiers : ${esc(e.message)}</p>`; }
+
     const lock = await client.getMailboxLock(mailbox);
     let rows = '', total = 0, shown = 0;
     try {
@@ -57,7 +75,7 @@ module.exports = async function imapTest(_req, res) {
     const head = `<p class=ok>Connexion à ${esc(host)} réussie (compte ${esc(user)}).</p>
       <p>Boîte <code>${esc(mailbox)}</code> — <b>${total}</b> message(s) au total ; aperçu des <b>${shown}</b> plus récents (lus ou non).
       Filtre d'objet : ${filter ? `<code>${esc(filter)}</code>` : '<i>aucun (tous les mails)</i>'}.</p>`;
-    res.send(page(head + (rows || '<p>Aucun message récent à analyser dans ce dossier.</p>')));
+    res.send(page(head + (rows || '<p>Aucun message récent à analyser dans ce dossier.</p>') + dossiers));
   } catch (e) {
     res.send(page(`<p class=ko>Échec de connexion : ${esc(e.message)}</p>
       <p>Causes fréquentes : mot de passe d'application incorrect, ou validation en deux étapes non activée.</p>`));
