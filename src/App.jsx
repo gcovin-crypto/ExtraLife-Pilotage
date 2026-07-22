@@ -396,16 +396,25 @@ const computeSession = (s, params = DEFAULT_PARAMS) => {
   const tx = caht > 0 ? mb / caht : null;
   const tva = nval(s.tva) / 100;
   const ttc = caht * (1 + tva);
-  const eff = nval(s.placesMax) || params.capacite;
-  const rempl = (s.nbCand !== "" && s.nbCand != null) ? nval(s.nbCand) / eff : null;
-  const heures = nval(s.heures) || (formById(s.formationId)?.dureeJours || 1) * 7;
+  // Aucune valeur n'est inventée : une donnée absente vaut null et s'affiche « — ».
+  const capaciteSaisie = nval(s.placesMax) > 0;
+  const heuresSaisies = nval(s.heures) > 0;
+  const coutSaisi = coutVar > 0;
+  const eff = capaciteSaisie ? nval(s.placesMax) : null;
+  const presents = nval(s.presents) || nval(s.nbParticipants) || nval(s.nbCand) || 0;
+  const rempl = capaciteSaisie && presents > 0 ? presents / eff : null;
+  const heures = heuresSaisies ? nval(s.heures) : null;
+  const margeAppr = presents > 0 && coutSaisi ? mb / presents : null;
+  const margeHoraire = heuresSaisies && coutSaisi ? mb / heures : null;
+  const partFormateur = caht > 0 ? (nval(s.cFormateur) + nval(s.cesu)) / caht : null;
   const passe = s.date ? (new Date(s.date) <= TODAY_REF) : false;
   let etat;
   if (s.annulee) etat = "Annulée";
   else if (caht <= 0) etat = "Planifiée";
   else if (passe) etat = "Réalisée";
   else etat = "À venir";
-  return { caht, coutVar, mb, tx, tva, ttc, eff, rempl, heures, etat, passe };
+  return { caht, coutVar, mb, tx, tva, ttc, eff, rempl, heures, etat, passe,
+    capaciteSaisie, heuresSaisies, coutSaisi, presents, margeAppr, margeHoraire, partFormateur };
 };
 // Styles d'état
 const ETAT_STYLE = {
@@ -1621,6 +1630,7 @@ function SessionModal({ session, onClose, onSave, prefill }) {
     ...d, nbCand: numOrNull(d.nbCand), prixCand: numOrNull(d.prixCand), forfait: numOrNull(d.forfait),
     repas: numOrNull(d.repas), cFormateur: numOrNull(d.cFormateur), cesu: numOrNull(d.cesu),
     locaux: numOrNull(d.locaux), partenaire: numOrNull(d.partenaire), placesMax: numOrNull(d.placesMax),
+    heures: numOrNull(d.heures), presents: numOrNull(d.presents),
     tva: +d.tva || 0,
   };
   const c = computeSession(draft);
@@ -1634,6 +1644,20 @@ function SessionModal({ session, onClose, onSave, prefill }) {
     if (!d.client.trim()) { alert("Le client est obligatoire."); return; }
     if (d.base === "Groupe" && draft.forfait == null) { alert("Renseignez le forfait groupe (CA HT)."); return; }
     if (d.base === "Par candidat" && (draft.prixCand == null || draft.nbCand == null)) { alert("Renseignez le prix par candidat et le nombre de candidats."); return; }
+    // Sans coût, sans capacité et sans durée, la session n'est pas analysable :
+    // elle afficherait 100 % de marge et un remplissage inconnu.
+    const manque = [];
+    const coutTotal = (draft.cFormateur || 0) + (draft.cesu || 0) + (draft.repas || 0)
+                    + (draft.locaux || 0) + (draft.partenaire || 0);
+    if (coutTotal <= 0) manque.push("au moins un coût direct (formateur, CESU, repas, locaux ou commission)");
+    if (!(draft.placesMax > 0)) manque.push("la capacité de la session");
+    if (!(draft.heures > 0)) manque.push("la durée en heures");
+    if (manque.length && !session) {
+      alert("Il manque " + manque.join(", ") + ".\n\n" +
+        "Ces informations conditionnent le calcul de la marge, du taux de remplissage et de la marge horaire. " +
+        "Une session enregistrée sans elles apparaît à 100 % de marge, ce qui fausse toutes vos analyses.");
+      return;
+    }
     onSave({
       id: session?.id || uid("s"), ref: session?.ref || `S-${(d.date || TODAY_ISO).replace(/-/g, "").slice(2)}`,
       date: d.date, formationId: d.formationId, client: d.client.trim(), origine: d.origine, formateur: (d.formateur || "").trim(),
@@ -1667,6 +1691,8 @@ function SessionModal({ session, onClose, onSave, prefill }) {
               : <div className="field"><label>Prix / candidat (€)</label><input className="input num" type="number" value={d.prixCand} onChange={(e) => set("prixCand", e.target.value)} /></div>}
             <div className="field"><label>CA HT (€) · auto</label><input className="input num" readOnly value={fmtE(c.caht)} style={{ background: "var(--surface-2)", fontWeight: 700 }} /></div>
             <div className="field"><label>Places max</label><input className="input num" type="number" min="1" value={d.placesMax} onChange={(e) => set("placesMax", e.target.value)} placeholder="12" /></div>
+            <div className="field"><label>Apprenants présents</label><input className="input num" type="number" min="0" value={d.presents} onChange={(e) => set("presents", e.target.value)} placeholder="10" /></div>
+            <div className="field"><label>Durée (heures)</label><input className="input num" type="number" min="0" step="0.5" value={d.heures} onChange={(e) => set("heures", e.target.value)} placeholder="14" /></div>
             <div className="field"><label>TVA %</label><input className="input num" type="number" min="0" value={d.tva} onChange={(e) => set("tva", e.target.value)} /></div>
             <div className="field field-c2" style={{ display: "flex", alignItems: "flex-end" }}>
               <button type="button" className="btn btn-sm" onClick={estimer}><Calculator size={13} /> Estimer les coûts directs (catalogue)</button>
@@ -1731,6 +1757,7 @@ function Rentabilite({ factures, setFactures, prospects, depenses, params, setPa
   const [fMois, setFMois] = useState("");
   const [fEtat, setFEtat] = useState("");
   const [openMonths, setOpenMonths] = useState({});
+  const [openRow, setOpenRow] = useState(null);
   const toggleMonth = (m) => setOpenMonths((o) => ({ ...o, [m]: !o[m] }));
   const sessionsOfMonth = (label) => factures
     .filter((s) => moisLabelFromDate(s.date) === label)
@@ -1825,7 +1852,7 @@ function Rentabilite({ factures, setFactures, prospects, depenses, params, setPa
       const c = computeSession(s, P); if (c.etat === "Annulée" || c.etat === "Planifiée") continue;
       const name = (s.formateur || "").trim() || "— non renseigné —";
       const m = map[name] || (map[name] = { name, ca: 0, cout: 0, mb: 0, nb: 0, heures: 0 });
-      m.ca += c.caht; m.cout += c.coutVar; m.mb += c.mb; m.nb++; m.heures += c.heures;
+      m.ca += c.caht; m.cout += c.coutVar; m.mb += c.mb; m.nb++; m.heures += (c.heures || 0);
     }
     return Object.values(map).map((x) => ({ ...x, taux: x.ca ? x.mb / x.ca : 0, coutMoyen: x.nb ? x.cout / x.nb : 0 })).sort((a, b) => b.ca - a.ca);
   }, [factures, P]);
@@ -1969,14 +1996,26 @@ function Rentabilite({ factures, setFactures, prospects, depenses, params, setPa
             <datalist id="dl_origines_sessions">{origineOptions.map((c) => <option key={c} value={c} />)}</datalist>
             <table className="tbl">
               <thead><tr>
-                <th>Date</th><th>Formation</th><th style={{ minWidth: 170 }}>Client</th><th style={{ minWidth: 150 }}>Provenance lead</th><th>Formateur</th><th className="t-center">Cand.</th>
-                <th className="t-right">CA HT</th><th className="t-right">Coût dir.</th><th className="t-right">Marge</th><th className="t-right">Tx</th><th className="t-right">Rempl.</th><th>Paiement</th><th>État</th><th className="t-center">Actions</th>
+                <th style={{ width: 26 }}></th>
+                <th>Date</th><th>Formation</th><th style={{ minWidth: 168 }}>Client</th><th>Formateur</th>
+                <th className="t-center">Appr. / cap.</th><th className="t-right">Durée</th>
+                <th className="t-right">CA HT</th><th className="t-right">Coût direct</th>
+                <th className="t-right">Marge</th><th className="t-right">Taux</th>
+                <th className="t-right">€/appr.</th><th className="t-right">€/h</th>
+                <th>État</th><th className="t-center">Actions</th>
               </tr></thead>
               <tbody>
                 {tableData.map(({ s, c }) => {
                   const fo = formById(s.formationId), st = FACT_STATUTS[s.statut] || FACT_STATUTS.attente, es = ETAT_STYLE[c.etat];
                   return (
-                    <tr key={s.id}>
+                    <Fragment key={s.id}>
+                    <tr>
+                      <td>
+                        <button className="btn btn-icon" style={{ padding: 4 }} title="Détail des coûts"
+                          onClick={() => setOpenRow(openRow === s.id ? null : s.id)}>
+                          <ChevronRight size={13} style={{ transform: openRow === s.id ? "rotate(90deg)" : "none", transition: "transform .15s" }} />
+                        </button>
+                      </td>
                       <td className="num faint" style={{ whiteSpace: "nowrap" }}>{frDate(s.date)}</td>
                       <td><span className="tag" style={{ color: fo?.color, borderColor: fo?.color + "44" }}>{fo?.code || "—"}</span></td>
                       <td>
@@ -1984,19 +2023,23 @@ function Rentabilite({ factures, setFactures, prospects, depenses, params, setPa
                           onChange={(e) => patchSession(s.id, { client: e.target.value })}
                           style={{ width: "100%", minWidth: 150, padding: "5px 8px", fontSize: 12.5, fontWeight: 600 }} />
                       </td>
-                      <td>
-                        <input className="input cell-input" list="dl_origines_sessions" value={s.origine || ""} placeholder="Provenance…"
-                          onChange={(e) => patchSession(s.id, { origine: e.target.value, source: e.target.value })}
-                          style={{ width: "100%", minWidth: 130, padding: "5px 8px", fontSize: 12 }} />
+                      <td className="faint" style={{ fontSize: 12 }}>{s.formateur || <span style={{ color: "var(--gold)" }}>à affecter</span>}</td>
+                      <td className="t-center num" style={{ whiteSpace: "nowrap" }}>
+                        {c.presents || "—"}<span className="faint"> / {c.capaciteSaisie ? c.eff : "?"}</span>
+                        {c.rempl != null && (
+                          <div className="faint" style={{ fontSize: 10.5, color: c.rempl < 0.7 ? "var(--gold)" : "var(--ink-3)" }}>
+                            {fmtPct(c.rempl)}
+                          </div>
+                        )}
                       </td>
-                      <td className="faint" style={{ fontSize: 12 }}>{s.formateur || "—"}</td>
-                      <td className="t-center num">{s.nbCand != null && s.nbCand !== "" ? s.nbCand : "—"}</td>
+                      <td className="t-right num faint">{c.heuresSaisies ? `${c.heures} h` : "—"}</td>
                       <td className="t-right num" style={{ fontWeight: 700 }}>{c.caht ? fmtE(c.caht) : "—"}</td>
-                      <td className="t-right num faint">{c.coutVar ? fmtE(c.coutVar) : "—"}</td>
-                      <td className="t-right num" style={{ color: c.tx != null && c.tx < 0.4 ? "var(--st-lost)" : "var(--brand)", fontWeight: 600 }}>{c.caht ? fmtE(c.mb) : "—"}</td>
-                      <td className="t-right num faint">{c.tx != null ? fmtPct(c.tx) : "—"}</td>
-                      <td className="t-right num faint">{c.rempl != null ? fmtPct(c.rempl) : "—"}</td>
-                      <td><Badge color={st.color} bg={st.bg}>{st.label}</Badge></td>
+                      <td className="t-right num faint">{c.coutSaisi ? fmtE(c.coutVar) : <span style={{ color: "var(--gold)" }}>à saisir</span>}</td>
+                      <td className="t-right num" style={{ color: !c.coutSaisi ? "var(--ink-3)" : c.tx < 0.4 ? "var(--st-lost)" : "var(--brand)", fontWeight: 600 }}>
+                        {c.caht && c.coutSaisi ? fmtE(c.mb) : "—"}</td>
+                      <td className="t-right num faint">{c.coutSaisi && c.tx != null ? fmtPct(c.tx) : "—"}</td>
+                      <td className="t-right num faint">{c.margeAppr != null ? fmtE(c.margeAppr) : "—"}</td>
+                      <td className="t-right num faint">{c.margeHoraire != null ? fmtE(c.margeHoraire) : "—"}</td>
                       <td><Badge color={es.color} bg={es.bg} dot>{c.etat}</Badge></td>
                       <td>
                         <div style={{ display: "flex", gap: 6, justifyContent: "center" }}>
@@ -2005,6 +2048,65 @@ function Rentabilite({ factures, setFactures, prospects, depenses, params, setPa
                         </div>
                       </td>
                     </tr>
+                    {openRow === s.id && (
+                      <tr>
+                        <td colSpan={15} style={{ background: "var(--surface-2)", padding: "14px 18px" }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 18 }}>
+                            <div>
+                              <div className="eyebrow" style={{ marginBottom: 7 }}>Compte de résultat de la session</div>
+                              {[["Chiffre d'affaires HT", c.caht, true],
+                                ["Formateur (facture)", -(nval(s.cFormateur)), false],
+                                ["Formateur (CESU)", -(nval(s.cesu)), false],
+                                ["Repas", -(nval(s.repas)), false],
+                                ["Locaux", -(nval(s.locaux)), false],
+                                ["Commission partenaire", -(nval(s.partenaire)), false]].map(([lib, v, gras]) => (
+                                <div key={lib} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "2px 0",
+                                  color: v === 0 ? "var(--ink-3)" : "var(--ink-2)" }}>
+                                  <span>{lib}</span><span className="num" style={{ fontWeight: gras ? 700 : 500 }}>{v ? fmtE(v) : "—"}</span>
+                                </div>
+                              ))}
+                              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, paddingTop: 6, marginTop: 5,
+                                borderTop: "1px solid var(--line)", fontWeight: 700 }}>
+                                <span>Marge sur coûts directs</span>
+                                <span className="num" style={{ color: c.coutSaisi ? "var(--brand)" : "var(--gold)" }}>
+                                  {c.coutSaisi ? `${fmtE(c.mb)} · ${fmtPct(c.tx)}` : "coûts non saisis"}</span>
+                              </div>
+                            </div>
+                            <div>
+                              <div className="eyebrow" style={{ marginBottom: 7 }}>Leviers</div>
+                              {[["Part du formateur dans le CA", c.partFormateur != null && c.coutSaisi ? fmtPct(c.partFormateur) : "—"],
+                                ["Taux de remplissage", c.rempl != null ? fmtPct(c.rempl) : "capacité non saisie"],
+                                ["Places vides", c.capaciteSaisie && c.presents ? `${Math.max(0, c.eff - c.presents)}` : "—"],
+                                ["Marge par apprenant", c.margeAppr != null ? fmtE(c.margeAppr) : "—"],
+                                ["Marge horaire", c.margeHoraire != null ? fmtE(c.margeHoraire) : "durée non saisie"],
+                                ["CA par apprenant", c.presents ? fmtE(c.caht / c.presents) : "—"]].map(([lib, v]) => (
+                                <div key={lib} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "2px 0" }}>
+                                  <span style={{ color: "var(--ink-2)" }}>{lib}</span>
+                                  <span className="num" style={{ fontWeight: 600 }}>{v}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <div>
+                              <div className="eyebrow" style={{ marginBottom: 7 }}>Contexte</div>
+                              <div className="field" style={{ marginBottom: 8 }}>
+                                <label style={{ fontSize: 11 }}>Provenance du lead</label>
+                                <input className="input" list="dl_origines_sessions" value={s.origine || ""} placeholder="Provenance…"
+                                  onChange={(e) => patchSession(s.id, { origine: e.target.value, source: e.target.value })}
+                                  style={{ padding: "5px 8px", fontSize: 12 }} />
+                              </div>
+                              {[["Financement", s.financement || "—"],
+                                ["Base de facturation", s.base || "—"],
+                                ["Paiement", st.label]].map(([lib, v]) => (
+                                <div key={lib} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "2px 0" }}>
+                                  <span style={{ color: "var(--ink-2)" }}>{lib}</span><span style={{ fontWeight: 600 }}>{v}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   );
                 })}
                 {tableData.length === 0 && <tr><td colSpan={14} className="empty" style={{ padding: 26 }}>Aucune session. Ajoutez-en une avec « Nouvelle session ».</td></tr>}
