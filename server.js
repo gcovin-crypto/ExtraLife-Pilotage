@@ -82,6 +82,7 @@ app.post('/api/webhook/lead', (req, res) => {
 /* ------------------------------------------- authentification, état, leads */
 
 app.use(appRouter);
+app.use(require('./routes-digiforma').router);
 
 /* ----------------------------------------------- routes carte (protégées) */
 

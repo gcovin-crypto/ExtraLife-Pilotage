@@ -212,7 +212,52 @@ Ces données sont enregistrées dans l'état partagé, avec les mêmes règles d
 
 ---
 
-## 10. Sauvegardes
+## 10. Digiforma
+
+La plateforme se connecte à l'API GraphQL de Digiforma **en lecture seule**. Aucune écriture n'est jamais envoyée à Digiforma.
+
+### Activer la connexion
+
+1. Vérifiez que votre abonnement Digiforma inclut l'option API GraphQL (page des options avancées de votre compte).
+2. Dans Digiforma : Paramètres → Interconnexions → GraphQL → *Générer un token*.
+3. Sur le serveur, renseignez la variable `DIGIFORMA_TOKEN` avec ce token, puis redéployez.
+4. Ouvrez `/api/digiforma/diagnostic` en tant qu'administrateur : la page confirme la connexion, liste les champs réellement disponibles et affiche un aperçu de trois sessions.
+
+### Ce qui remonte
+
+Par session : date, programme, client, formateur, apprenants, **capacité**, **durée**, CA HT, encaissements, coûts, coût formateur, **satisfaction**, état, lieu.
+
+Ce qui ne remonte jamais : l'**origine du lead** (Lonasanté, Adwords, Laboform, client récurent). Cette classification est la vôtre, Digiforma ne la connaît pas. Le pipeline CRM et la planification restent également locaux.
+
+### Le principe : signaler, jamais écraser
+
+L'onglet **Digiforma** compare les deux systèmes et présente trois vues :
+
+- **Écarts** — sessions présentes des deux côtés. Pour chacune, les champs qui diffèrent, avec la valeur de la plateforme et celle de Digiforma. Deux natures : *à récupérer* (absent chez vous, présent dans Digiforma) et *divergent* (les deux ont une valeur, elles ne concordent pas).
+- **À importer** — sessions présentes dans Digiforma sans équivalent ici.
+- **Hors Digiforma** — vos sessions sans correspondance trouvée.
+
+Rien n'est repris automatiquement. Vous cochez les champs voulus, puis validez. Le bouton *Cocher les champs manquants* sélectionne d'un coup tout ce qui est absent chez vous — c'est le geste le plus utile au premier usage.
+
+Seuls neuf champs sont reprenables : CA HT, coût direct, coût formateur, apprenants, capacité, durée, satisfaction, formateur, client. Toute autre clé envoyée au serveur est ignorée.
+
+### Comment le rapprochement fonctionne
+
+Une session locale et une session Digiforma sont rapprochées sur un score combinant l'écart de dates (dominant, au-delà de 10 jours aucun rapprochement), la similitude du nom de client, le formateur et le montant. Au-dessus de 70 points le rapprochement est *sûr* ; entre 45 et 70 il est proposé *à confirmer* et affiché comme tel.
+
+Si beaucoup de vos sessions apparaissent dans *Hors Digiforma*, c'est en général que le nom du client diffère entre les deux systèmes. Le rapprochement tolère les variantes courantes (majuscules, accents, formes juridiques, mots vides) mais pas deux dénominations réellement différentes.
+
+### Limites connues
+
+**Pas de temps réel.** L'API Digiforma n'expose ni webhooks ni subscriptions. La synchronisation est manuelle, par le bouton *Synchroniser*.
+
+**Le connecteur découvre le schéma.** Avant chaque récupération, il interroge Digiforma par introspection pour savoir quels champs existent, puis construit sa requête avec ces seuls champs. Si Digiforma fait évoluer son modèle, la synchronisation se dégrade au lieu de casser — un champ disparu cesse simplement de remonter.
+
+**La capacité dépend de votre saisie Digiforma.** Elle provient des « Limites d'effectif » du programme. Si cette case n'est pas cochée dans Digiforma, la capacité ne remontera pas et vos taux de remplissage resteront vides.
+
+---
+
+## 11. Sauvegardes
 
 - **Automatique** : chaque enregistrement archive une version complète, 60 conservées. Un administrateur peut consulter `/api/state/history` et restaurer par `/api/state/restore/<id>`.
 - **Manuelle** : les boutons *Exporter / Importer JSON* de l'application restent disponibles. Gardez l'habitude d'un export mensuel hors ligne.
@@ -220,7 +265,7 @@ Ces données sont enregistrées dans l'état partagé, avec les mêmes règles d
 
 ---
 
-## 11. Ce qui reste à faire
+## 12. Ce qui reste à faire
 
 Trois points relevés lors de la reprise, à traiter quand vous le souhaiterez :
 
@@ -235,7 +280,7 @@ La date du jour était **figée au 18 juin 2026** à trois endroits du code d'or
 
 ---
 
-## 12. Contenu du dépôt
+## 13. Contenu du dépôt
 
 ```
 extralife-pilotage/
@@ -251,8 +296,11 @@ extralife-pilotage/
 ├── seed.json           639 demandes historiques
 ├── seed-state.json     sauvegarde du 20 juillet : prospects, factures, dépenses
 ├── public-carte/       carte de France interactive
+├── digiforma.js        connecteur GraphQL Digiforma (lecture seule)
+├── reconcile.js        rapprochement plateforme / Digiforma
+├── routes-digiforma.js routes de synchronisation et de reprise
 ├── src/
-│   ├── App.jsx         application de pilotage, 9 onglets
+│   ├── App.jsx         application de pilotage, 10 onglets
 │   ├── Auth.jsx        connexion, bandeaux de synchronisation, comptes
 │   ├── main.jsx        point d'entrée
 │   └── storage-server.js  persistance serveur, remplace le localStorage

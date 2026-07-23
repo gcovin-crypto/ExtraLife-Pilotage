@@ -2991,6 +2991,20 @@ function ModaleTransformation({ lead, onClose, onValide }) {
  *  Les demandes vivent côté serveur. Le bouton « Transformer en
  *  prospect » crée l'opportunité dans le pipeline CRM, sans ressaisie.
  * ============================================================= */
+const VUES_DEMANDES = [
+  { id: "aTraiter",  label: "À traiter",   test: (l) => !l.promotedProspectId && l.status === "open" },
+  { id: "pipeline",  label: "Au pipeline", test: (l) => !!l.promotedProspectId },
+  { id: "gagnees",   label: "Gagnées",     test: (l) => l.status === "gagne" },
+  { id: "perdues",   label: "Perdues",     test: (l) => l.status === "perdu" },
+  { id: "toutes",    label: "Toutes",      test: () => true },
+];
+// « 2026-07 » devient « juillet 2026 ».
+const moisLong = (cle) => {
+  if (!/^\d{4}-\d{2}$/.test(cle)) return cle;
+  const [a, m] = cle.split("-");
+  return new Date(+a, +m - 1, 1).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+};
+
 function CarteDemandes() {
   const [leads, setLeads] = useState(null);
   const [erreur, setErreur] = useState(null);
@@ -2998,6 +3012,9 @@ function CarteDemandes() {
   const [recherche, setRecherche] = useState("");
   const [vue, setVue] = useState("aTraiter");
   const [periode, setPeriode] = useState(90);
+  const [formationF, setFormationF] = useState("");
+  const [tri, setTri] = useState({ col: "receivedAt", sens: -1 });
+  const [moisOuverts, setMoisOuverts] = useState({});
 
   const charger = () => {
     setErreur(null);
@@ -3024,28 +3041,63 @@ function CarteDemandes() {
       }
       window.location.reload();
       return true;
-    } catch {
-      window.alert("Serveur injoignable.");
-      return false;
-    }
+    } catch { window.alert("Serveur injoignable."); return false; }
   };
 
-  const filtres = useMemo(() => {
+  // Filtre commun à tous les onglets : période, formation, recherche libre.
+  const base = useMemo(() => {
     if (!leads) return [];
     const q = recherche.trim().toLowerCase();
     const limite = periode ? Date.now() - periode * 864e5 : 0;
     return leads.filter((l) => {
       if (limite && new Date(l.receivedAt).getTime() < limite) return false;
-      if (vue === "aTraiter" && (l.promotedProspectId || l.status !== "open")) return false;
-      if (vue === "transformes" && !l.promotedProspectId) return false;
+      if (formationF && devinerFormation(l) !== formationF) return false;
       if (!q) return true;
-      return [l.structure, l.nom, l.prenom, l.dept, l.formation, l.formationShort]
+      return [l.structure, l.nom, l.prenom, l.dept, l.contact, l.formation, l.formationShort]
         .filter(Boolean).join(" ").toLowerCase().includes(q);
     });
-  }, [leads, recherche, vue, periode]);
+  }, [leads, recherche, periode, formationF]);
 
-  const recentes = leads ? leads.filter((l) => Date.now() - new Date(l.receivedAt).getTime() < 90 * 864e5) : [];
-  const aTraiter = recentes.filter((l) => !l.promotedProspectId && l.status === "open").length;
+  const compteurs = useMemo(() => {
+    const c = {};
+    VUES_DEMANDES.forEach((v) => { c[v.id] = base.filter(v.test).length; });
+    return c;
+  }, [base]);
+
+  const lignes = useMemo(() => {
+    const v = VUES_DEMANDES.find((x) => x.id === vue) || VUES_DEMANDES[0];
+    const out = base.filter(v.test);
+    const { col, sens } = tri;
+    return out.sort((a, b) => {
+      let x = a[col], y = b[col];
+      if (col === "candidats") { x = Number(x) || 0; y = Number(y) || 0; }
+      else { x = String(x || ""); y = String(y || ""); }
+      return x < y ? -sens : x > y ? sens : 0;
+    });
+  }, [base, vue, tri]);
+
+  // Regroupement par mois de réception, du plus récent au plus ancien.
+  const parMois = useMemo(() => {
+    const g = new Map();
+    lignes.forEach((l) => {
+      const k = (l.receivedAt || "").slice(0, 7) || "sans date";
+      if (!g.has(k)) g.set(k, []);
+      g.get(k).push(l);
+    });
+    return [...g.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+  }, [lignes]);
+
+  // Le mois le plus récent s'ouvre seul ; les autres restent repliés.
+  useEffect(() => {
+    if (parMois.length) setMoisOuverts({ [parMois[0][0]]: true });
+  }, [vue, periode, formationF, leads]);
+
+  const trier = (col) => setTri((t) => ({ col, sens: t.col === col ? -t.sens : -1 }));
+  const Fleche = ({ col }) => tri.col !== col ? null
+    : <span style={{ fontSize: 9, marginLeft: 3 }}>{tri.sens === 1 ? "▲" : "▼"}</span>;
+
+  const aTraiter = leads ? leads.filter((l) => !l.promotedProspectId && l.status === "open"
+    && Date.now() - new Date(l.receivedAt).getTime() < 90 * 864e5).length : 0;
   const transformes = leads ? leads.filter((l) => l.promotedProspectId).length : 0;
 
   return (
@@ -3065,74 +3117,164 @@ function CarteDemandes() {
         </div>
         <div className="kpi">
           <div className="kpi-lbl"><Bell size={13} /> À traiter (90 j)</div>
-          <div className="kpi-val" style={{ color: "var(--st-quote)" }}>{leads ? aTraiter : "—"}</div>
+          <div className="kpi-val" style={{ color: aTraiter ? "var(--gold)" : "var(--ink)" }}>{leads ? aTraiter : "—"}</div>
         </div>
         <div className="kpi">
           <div className="kpi-lbl"><UserPlus size={13} /> Transformées en prospect</div>
           <div className="kpi-val" style={{ color: "var(--st-won)" }}>{leads ? transformes : "—"}</div>
         </div>
+        <div className="kpi">
+          <div className="kpi-lbl"><Percent size={13} /> Taux de transformation</div>
+          <div className="kpi-val">{leads && leads.length ? fmtPct(transformes / leads.length) : "—"}</div>
+        </div>
       </div>
 
       <div className="card" style={{ marginBottom: 18 }}>
-        <div className="card-head">
-          <h3>Demandes</h3>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", marginLeft: "auto" }}>
-            <select className="select" style={{ width: 150 }} value={periode}
-              onChange={(e) => setPeriode(Number(e.target.value))}>
-              <option value={30}>30 derniers jours</option>
-              <option value={90}>90 derniers jours</option>
-              <option value={365}>12 derniers mois</option>
-              <option value={0}>Depuis l'origine</option>
-            </select>
-            <select className="select" style={{ width: 190 }} value={vue} onChange={(e) => setVue(e.target.value)}>
-              <option value="aTraiter">À traiter</option>
-              <option value="transformes">Déjà transformées</option>
-              <option value="toutes">Toutes</option>
-            </select>
-            <input className="input" style={{ width: 200 }} placeholder="Rechercher…"
-              value={recherche} onChange={(e) => setRecherche(e.target.value)} />
+        <div className="section-title" style={{ padding: "14px 16px 0", margin: 0 }}>
+          <div className="pill-tab">
+            {VUES_DEMANDES.map((v) => (
+              <button key={v.id} className={vue === v.id ? "on" : ""} onClick={() => setVue(v.id)}>
+                {v.label} <span style={{ opacity: 0.6, fontWeight: 500 }}>{compteurs[v.id] ?? 0}</span>
+              </button>
+            ))}
           </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", padding: "12px 16px 14px", alignItems: "center" }}>
+          <input className="input" style={{ flex: "1 1 220px", minWidth: 180 }}
+            placeholder="Structure, nom, département, téléphone…"
+            value={recherche} onChange={(e) => setRecherche(e.target.value)} />
+          <select className="select" style={{ width: 160 }} value={periode} onChange={(e) => setPeriode(Number(e.target.value))}>
+            <option value={30}>30 derniers jours</option>
+            <option value={90}>90 derniers jours</option>
+            <option value={365}>12 derniers mois</option>
+            <option value={0}>Depuis l'origine</option>
+          </select>
+          <select className="select" style={{ width: 150 }} value={formationF} onChange={(e) => setFormationF(e.target.value)}>
+            <option value="">Toutes formations</option>
+            {FORMATIONS.map((f) => <option key={f.id} value={f.id}>{f.code}</option>)}
+          </select>
+          <span className="faint" style={{ fontSize: 12.5, marginLeft: "auto" }}>
+            {lignes.length} demande{lignes.length > 1 ? "s" : ""}
+          </span>
         </div>
 
         {erreur && <p style={{ padding: "0 16px 16px", color: "var(--st-lost)", fontSize: 13 }}>{erreur}</p>}
         {!leads && !erreur && <p style={{ padding: "0 16px 16px", color: "var(--ink-3)", fontSize: 13 }}>Chargement…</p>}
 
         {leads && (
-          <div className="scroll-x">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Reçue le</th><th>Dép.</th><th>Structure / contact</th>
-                  <th>Formation</th><th style={{ textAlign: "right" }}>Pers.</th><th>Type</th><th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtres.length === 0 && (
-                  <tr><td colSpan={7} style={{ color: "var(--ink-3)", padding: 22 }}>Aucune demande dans cette vue.</td></tr>
-                )}
-                {filtres.slice(0, 200).map((l) => {
-                  const qui = l.structure || [l.prenom, l.nom].filter(Boolean).join(" ") || "—";
-                  return (
-                    <tr key={l.id}>
-                      <td>{(l.receivedAt || "").slice(0, 10)}</td>
-                      <td><span className="tag">{l.dept}</span></td>
-                      <td style={{ fontWeight: 600 }}>{qui}</td>
-                      <td>{l.formationShort || l.formation || "—"}</td>
-                      <td style={{ textAlign: "right" }}>{l.candidats}</td>
-                      <td><span className="tag">{l.isGroup ? "Groupe" : "Individuel"}</span></td>
-                      <td style={{ textAlign: "right" }}>
-                        {l.promotedProspectId
-                          ? <span className="tag" style={{ color: "var(--st-won)" }}>Au pipeline</span>
-                          : <button className="btn btn-sm" onClick={() => setATransformer(l)}>
-                              <UserPlus size={14} /> Transformer en prospect
-                            </button>}
+          <>
+            <div className="scroll-x">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th className="row-clic" onClick={() => trier("receivedAt")}>Reçue le<Fleche col="receivedAt" /></th>
+                    <th className="row-clic" onClick={() => trier("dept")}>Dép.<Fleche col="dept" /></th>
+                    <th style={{ minWidth: 180 }}>Demandeur</th>
+                    <th style={{ minWidth: 150 }}>Contact</th>
+                    <th>Formation</th>
+                    <th className="t-center row-clic" onClick={() => trier("candidats")}>Pers.<Fleche col="candidats" /></th>
+                    <th>Statut</th>
+                    <th className="t-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {parMois.length === 0 && (
+                    <tr><td colSpan={8} style={{ color: "var(--ink-3)", padding: 26, textAlign: "center" }}>
+                      Aucune demande dans cette vue.
+                    </td></tr>
+                  )}
+                  {parMois.map(([mois, groupe]) => {
+                    const ouvert = !!moisOuverts[mois];
+                    const personnes = groupe.reduce((a, x) => a + (Number(x.candidats) || 0), 0);
+                    const groupes = groupe.filter((x) => x.isGroup).length;
+                    const traiter = groupe.filter((x) => !x.promotedProspectId && x.status === "open").length;
+                    return (
+                  <Fragment key={mois}>
+                    <tr className="row-clic" onClick={() => setMoisOuverts((m) => ({ ...m, [mois]: !m[mois] }))}
+                      style={{ background: "var(--surface-2)" }}>
+                      <td colSpan={8} style={{ padding: "10px 14px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <ChevronRight size={15} style={{ transform: ouvert ? "rotate(90deg)" : "none", transition: "transform .15s", flexShrink: 0 }} />
+                          <span style={{ fontWeight: 700, fontSize: 13.5, textTransform: "capitalize" }}>{moisLong(mois)}</span>
+                          <span className="tag">{groupe.length} demande{groupe.length > 1 ? "s" : ""}</span>
+                          <span className="faint" style={{ fontSize: 12 }}>{personnes} personne{personnes > 1 ? "s" : ""}</span>
+                          {groupes > 0 && <span className="faint" style={{ fontSize: 12 }}>· {groupes} groupe{groupes > 1 ? "s" : ""}</span>}
+                          {traiter > 0 && (
+                            <span className="tag" style={{ marginLeft: "auto", color: "var(--gold)", borderColor: "var(--gold)44" }}>
+                              {traiter} à traiter
+                            </span>
+                          )}
+                        </div>
                       </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                    {ouvert && groupe.map((l) => {
+                    const f = formById(devinerFormation(l));
+                    const jours = Math.floor((Date.now() - new Date(l.receivedAt).getTime()) / 864e5);
+                    const qui = l.structure || [l.prenom, l.nom].filter(Boolean).join(" ");
+                    const mail = /@/.test(l.contact || "") ? l.contact : "";
+                    const tel = !mail ? (l.contact || "") : "";
+                    return (
+                      <tr key={l.id}>
+                        <td style={{ whiteSpace: "nowrap" }}>
+                          {frDate((l.receivedAt || "").slice(0, 10))}
+                          <div className="faint" style={{ fontSize: 10.5 }}>
+                            {jours === 0 ? "aujourd'hui" : `il y a ${jours} j`}
+                          </div>
+                        </td>
+                        <td><span className="tag">{l.dept}</span></td>
+                        <td>
+                          <div style={{ fontWeight: 600 }}>{qui || <span className="faint">non renseigné</span>}</div>
+                          {l.structure && (l.prenom || l.nom) && (
+                            <div className="faint" style={{ fontSize: 11 }}>{[l.prenom, l.nom].filter(Boolean).join(" ")}</div>
+                          )}
+                        </td>
+                        <td style={{ fontSize: 12 }}>
+                          {mail && <a href={`mailto:${mail}`} style={{ color: "var(--brand)" }}>{mail}</a>}
+                          {tel && <span>{tel}</span>}
+                          {!mail && !tel && <span className="faint">—</span>}
+                        </td>
+                        <td><span className="tag" style={{ color: f?.color, borderColor: f?.color + "44" }}>{f?.code || "—"}</span></td>
+                        <td className="t-center num">
+                          {l.candidats}
+                          <div className="faint" style={{ fontSize: 10.5 }}>{l.isGroup ? "groupe" : "individuel"}</div>
+                        </td>
+                        <td>
+                          {l.promotedProspectId
+                            ? <span className="tag" style={{ color: "var(--st-won)", borderColor: "var(--st-won)44" }}>Au pipeline</span>
+                            : l.status === "gagne" ? <span className="tag" style={{ color: "var(--st-won)" }}>Gagnée</span>
+                            : l.status === "perdu" ? <span className="tag" style={{ color: "var(--st-lost)" }}>Perdue</span>
+                            : <span className="tag" style={{ color: "var(--gold)", borderColor: "var(--gold)44" }}>À traiter</span>}
+                        </td>
+                        <td className="t-right">
+                          {!l.promotedProspectId && (
+                            <button className="btn btn-sm" onClick={() => setATransformer(l)}>
+                              <UserPlus size={13} /> Transformer
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                    })}
+                  </Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {parMois.length > 1 && (
+              <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderTop: "1px solid var(--line)" }}>
+                <button className="btn btn-sm" onClick={() => setMoisOuverts(Object.fromEntries(parMois.map(([m]) => [m, true])))}>
+                  Tout déplier
+                </button>
+                <button className="btn btn-sm" onClick={() => setMoisOuverts({})}>Tout replier</button>
+                <span className="faint" style={{ fontSize: 12.5, marginLeft: "auto", alignSelf: "center" }}>
+                  {parMois.length} mois
+                </span>
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -3609,6 +3751,302 @@ function Planification({ aConfirmer, setAConfirmer, formateurs, setFormateurs, f
   );
 }
 
+/* ============================================================= *
+ *  DIGIFORMA — synchronisation en lecture seule.
+ *  La plateforme compare et signale ; elle n'écrase jamais.
+ *  Chaque reprise de valeur est un geste explicite.
+ * ============================================================= */
+function Digiforma() {
+  const [etat, setEtat] = useState(null);
+  const [rappro, setRappro] = useState(null);
+  const [vue, setVue] = useState("ecarts");
+  const [enCours, setEnCours] = useState(false);
+  const [choix, setChoix] = useState({});          // { localId: Set(champs) }
+  const [message, setMessage] = useState(null);
+
+  const charger = () => {
+    fetch("/api/digiforma/etat", { credentials: "include" })
+      .then((r) => r.json()).then(setEtat).catch(() => setEtat({ configure: false }));
+    fetch("/api/digiforma/rapprochement", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null)).then(setRappro).catch(() => {});
+  };
+  useEffect(charger, []);
+
+  const synchroniser = async () => {
+    setEnCours(true); setMessage(null);
+    try {
+      const r = await fetch("/api/digiforma/sync", { method: "POST", credentials: "include" });
+      const d = await r.json();
+      if (!r.ok) {
+        setMessage({ type: "ko", txt: d.error === "token_absent"
+          ? "Aucun token Digiforma n'est configuré sur le serveur."
+          : `Synchronisation impossible : ${d.message || d.error}` });
+      } else {
+        setMessage({ type: "ok", txt: `${d.recuperees} session(s) récupérées depuis Digiforma.` });
+        charger();
+      }
+    } catch { setMessage({ type: "ko", txt: "Serveur injoignable." }); }
+    finally { setEnCours(false); }
+  };
+
+  const basculer = (localId, champ) => setChoix((c) => {
+    const cur = new Set(c[localId] || []);
+    cur.has(champ) ? cur.delete(champ) : cur.add(champ);
+    return { ...c, [localId]: cur };
+  });
+
+  const toutSelectionner = (nature) => {
+    const n = {};
+    (rappro?.paires || []).forEach((p) => {
+      const ch = p.ecarts.filter((e) => e.nature === nature).map((e) => e.loc);
+      if (ch.length) n[p.localId] = new Set(ch);
+    });
+    setChoix(n);
+  };
+
+  const nbChoisis = Object.values(choix).reduce((t, s) => t + s.size, 0);
+
+  const appliquer = async () => {
+    const reprises = Object.entries(choix)
+      .filter(([, s]) => s.size)
+      .map(([localId, s]) => ({ localId, champs: [...s] }));
+    if (!reprises.length) return;
+    if (!window.confirm(
+      `Reprendre ${nbChoisis} valeur${nbChoisis > 1 ? "s" : ""} depuis Digiforma ?\n\n` +
+      `Seuls les champs cochés seront modifiés. La page sera rechargée.`)) return;
+    setEnCours(true);
+    try {
+      const r = await fetch("/api/digiforma/appliquer", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reprises }),
+      });
+      const d = await r.json();
+      if (!r.ok) { window.alert(d.message || "Reprise impossible."); setEnCours(false); return; }
+      window.location.reload();
+    } catch { window.alert("Serveur injoignable."); setEnCours(false); }
+  };
+
+  const R = rappro?.resume;
+  const VUES = [
+    { id: "ecarts", label: "Écarts", n: R?.avecEcart },
+    { id: "importer", label: "À importer", n: R?.aImporter },
+    { id: "hors", label: "Hors Digiforma", n: R?.horsDigiforma },
+  ];
+
+  return (
+    <div>
+      <div className="page-head">
+        <div>
+          <h1>Digiforma</h1>
+          <p>Synchronisation en lecture seule — la plateforme signale, vous décidez</p>
+        </div>
+        <button className="btn btn-primary" onClick={synchroniser} disabled={enCours || !etat?.configure}>
+          <RefreshCw size={15} /> {enCours ? "Synchronisation…" : "Synchroniser"}
+        </button>
+      </div>
+
+      {etat && !etat.configure && (
+        <div className="card" style={{ marginBottom: 18, padding: 16 }}>
+          <p style={{ margin: 0, fontSize: 13.5 }}>
+            <AlertTriangle size={14} style={{ verticalAlign: "-2px", color: "var(--gold)" }} />{" "}
+            Aucun token Digiforma n'est configuré. Générez-en un dans Digiforma
+            (Paramètres → Interconnexions → GraphQL), puis renseignez la variable
+            <code> DIGIFORMA_TOKEN</code> sur le serveur.
+          </p>
+        </div>
+      )}
+
+      {message && (
+        <div className="card" style={{ marginBottom: 18, padding: "12px 16px",
+          borderColor: message.type === "ko" ? "var(--st-lost)44" : "var(--st-won)44" }}>
+          <p style={{ margin: 0, fontSize: 13.5,
+            color: message.type === "ko" ? "var(--st-lost)" : "var(--st-won)" }}>{message.txt}</p>
+        </div>
+      )}
+
+      <div className="kpis" style={{ marginBottom: 18 }}>
+        <div className="kpi">
+          <div className="kpi-lbl"><Layers size={13} /> Sessions rapprochées</div>
+          <div className="kpi-val">{R ? R.rapprochees : "—"}</div>
+          {R && R.aConfirmer > 0 && (
+            <div className="faint" style={{ fontSize: 11 }}>dont {R.aConfirmer} à confirmer</div>
+          )}
+        </div>
+        <div className="kpi">
+          <div className="kpi-lbl"><Download size={13} /> Champs à récupérer</div>
+          <div className="kpi-val" style={{ color: "var(--st-won)" }}>{R ? R.champsManquants : "—"}</div>
+          <div className="faint" style={{ fontSize: 11 }}>absents chez vous, présents dans Digiforma</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-lbl"><AlertTriangle size={13} /> Valeurs divergentes</div>
+          <div className="kpi-val" style={{ color: R?.champsDivergents ? "var(--st-lost)" : "var(--ink)" }}>
+            {R ? R.champsDivergents : "—"}</div>
+          <div className="faint" style={{ fontSize: 11 }}>écarts à arbitrer</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-lbl"><Clock size={13} /> Dernière synchronisation</div>
+          <div className="kpi-val" style={{ fontSize: 17 }}>
+            {etat?.sync?.last_at ? frDate(etat.sync.last_at.slice(0, 10)) : "jamais"}</div>
+          {etat?.enCache > 0 && (
+            <div className="faint" style={{ fontSize: 11 }}>{etat.enCache} sessions en cache</div>
+          )}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="section-title" style={{ padding: "14px 16px 0", margin: 0 }}>
+          <div className="pill-tab">
+            {VUES.map((v) => (
+              <button key={v.id} className={vue === v.id ? "on" : ""} onClick={() => setVue(v.id)}>
+                {v.label} <span style={{ opacity: 0.6, fontWeight: 500 }}>{v.n ?? 0}</span>
+              </button>
+            ))}
+          </div>
+          {vue === "ecarts" && (
+            <div style={{ display: "flex", gap: 8, marginLeft: "auto" }}>
+              <button className="btn btn-sm" onClick={() => toutSelectionner("manquant")}>
+                Cocher les champs manquants
+              </button>
+              <button className="btn btn-sm" onClick={() => setChoix({})}>Tout décocher</button>
+              <button className="btn btn-primary btn-sm" disabled={!nbChoisis || enCours} onClick={appliquer}>
+                <CheckCircle2 size={14} /> Reprendre {nbChoisis || ""}
+              </button>
+            </div>
+          )}
+        </div>
+
+        {!rappro && <p style={{ padding: 18, color: "var(--ink-3)", fontSize: 13 }}>Chargement…</p>}
+
+        {rappro && vue === "ecarts" && (
+          <div style={{ padding: "14px 16px 18px" }}>
+            {rappro.paires.filter((p) => p.ecarts.length === 0).length === rappro.paires.length && (
+              <p style={{ color: "var(--ink-3)", fontSize: 13, margin: 0 }}>
+                Aucun écart. Les sessions rapprochées sont identiques de part et d'autre.
+              </p>
+            )}
+            {rappro.paires.filter((p) => p.ecarts.length).map((p) => (
+              <div key={p.localId} style={{ border: "1px solid var(--line)", borderRadius: 11,
+                padding: "12px 14px", marginBottom: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 9, flexWrap: "wrap" }}>
+                  <span style={{ fontWeight: 700, fontSize: 13.5 }}>{p.local.client || "—"}</span>
+                  <span className="faint" style={{ fontSize: 12 }}>{frDate(p.local.date)}</span>
+                  <span className="tag" style={{
+                    color: p.confiance === "sure" ? "var(--st-won)" : "var(--gold)",
+                    borderColor: (p.confiance === "sure" ? "var(--st-won)" : "var(--gold)") + "44" }}>
+                    {p.confiance === "sure" ? "rapprochement sûr" : "à confirmer"}
+                  </span>
+                  <span className="faint" style={{ fontSize: 11 }}>{p.motifs.join(" · ")}</span>
+                </div>
+                <table className="table" style={{ fontSize: 12.5 }}>
+                  <thead><tr>
+                    <th style={{ width: 30 }}></th><th>Champ</th>
+                    <th className="t-right">Plateforme</th><th className="t-right">Digiforma</th><th>Nature</th>
+                  </tr></thead>
+                  <tbody>
+                    {p.ecarts.map((e) => {
+                      const coche = !!(choix[p.localId] && choix[p.localId].has(e.loc));
+                      return (
+                        <tr key={e.loc} className="row-clic" onClick={() => basculer(p.localId, e.loc)}>
+                          <td><input type="checkbox" checked={coche} readOnly /></td>
+                          <td style={{ fontWeight: 600 }}>{e.label}</td>
+                          <td className="t-right num" style={{ color: e.nature === "manquant" ? "var(--ink-3)" : "var(--ink)" }}>
+                            {e.local == null ? "—" : e.type === "euro" ? fmtE(e.local) : String(e.local)}
+                          </td>
+                          <td className="t-right num" style={{ fontWeight: 700, color: "var(--brand)" }}>
+                            {e.type === "euro" ? fmtE(e.distant) : String(e.distant)}
+                          </td>
+                          <td>
+                            <span className="tag" style={{
+                              color: e.nature === "manquant" ? "var(--st-won)" : "var(--st-lost)",
+                              borderColor: (e.nature === "manquant" ? "var(--st-won)" : "var(--st-lost)") + "44" }}>
+                              {e.nature === "manquant" ? "à récupérer" : "divergent"}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {rappro && vue === "importer" && (
+          <div className="scroll-x">
+            <table className="table">
+              <thead><tr>
+                <th>Date</th><th>Session</th><th>Client</th><th>Formateur</th>
+                <th className="t-center">Appr.</th><th className="t-right">CA HT</th><th>État</th>
+              </tr></thead>
+              <tbody>
+                {rappro.orphelinsDistants.length === 0 && (
+                  <tr><td colSpan={7} style={{ padding: 22, color: "var(--ink-3)", textAlign: "center" }}>
+                    Toutes les sessions Digiforma ont un équivalent dans la plateforme.
+                  </td></tr>
+                )}
+                {rappro.orphelinsDistants.slice(0, 200).map((d) => (
+                  <tr key={d.digiformaId}>
+                    <td className="num">{frDate(d.date)}</td>
+                    <td style={{ fontWeight: 600 }}>{d.nom || d.programme || "—"}</td>
+                    <td>{d.client || <span className="faint">—</span>}</td>
+                    <td className="faint">{d.formateur || "—"}</td>
+                    <td className="t-center num">{d.nbParticipants ?? "—"}</td>
+                    <td className="t-right num">{d.montantHT ? fmtE(d.montantHT) : "—"}</td>
+                    <td><span className="tag">{d.etat || "—"}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {rappro.orphelinsDistants.length > 0 && (
+              <p style={{ padding: "12px 16px", margin: 0, color: "var(--ink-3)", fontSize: 12.5,
+                borderTop: "1px solid var(--line)" }}>
+                Ces sessions existent dans Digiforma sans équivalent ici. Leur création automatique
+                n'est pas activée : elle écraserait votre saisie d'origine du lead.
+              </p>
+            )}
+          </div>
+        )}
+
+        {rappro && vue === "hors" && (
+          <div className="scroll-x">
+            <table className="table">
+              <thead><tr>
+                <th>Date</th><th>Client</th><th>Formateur</th>
+                <th className="t-right">CA HT</th><th>Origine</th>
+              </tr></thead>
+              <tbody>
+                {rappro.orphelinsLocaux.length === 0 && (
+                  <tr><td colSpan={5} style={{ padding: 22, color: "var(--ink-3)", textAlign: "center" }}>
+                    Toutes vos sessions ont un équivalent dans Digiforma.
+                  </td></tr>
+                )}
+                {rappro.orphelinsLocaux.slice(0, 300).map((l) => (
+                  <tr key={l.id}>
+                    <td className="num">{frDate(l.date)}</td>
+                    <td style={{ fontWeight: 600 }}>{l.client || "—"}</td>
+                    <td className="faint">{l.formateur || "—"}</td>
+                    <td className="t-right num">{l.montantHT ? fmtE(l.montantHT) : "—"}</td>
+                    <td className="faint" style={{ fontSize: 12 }}>{l.origine || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {rappro.orphelinsLocaux.length > 0 && (
+              <p style={{ padding: "12px 16px", margin: 0, color: "var(--ink-3)", fontSize: 12.5,
+                borderTop: "1px solid var(--line)" }}>
+                Ces sessions n'ont pas été retrouvées dans Digiforma. Soit elles n'y ont jamais été
+                saisies, soit le rapprochement a échoué — vérifiez le nom du client et la date.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const NAV = [
   { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard, sub: "Pilotage commercial & financier" },
   { id: "crm",       label: "Pipeline CRM",    icon: KanbanSquare,    sub: "Prospects & opportunités" },
@@ -3619,6 +4057,7 @@ const NAV = [
   { id: "comparatif", label: "Comparatif N‑1",  icon: BarChart3,       sub: "Exercice en cours vs précédent" },
   { id: "planif",    label: "Planification",   icon: CalendarRange,  sub: "Formateurs, sessions & dates" },
   { id: "carte",     label: "Carte des demandes", icon: MapIcon,     sub: "Demandes LonaSanté & transformation" },
+  { id: "digiforma", label: "Digiforma",       icon: RefreshCw,      sub: "Synchronisation des sessions" },
 ];
 
 export default function App() {
@@ -3816,6 +4255,7 @@ export default function App() {
             {tab === "comparatif" && <ComparatifView factures={factures} params={rentaParams} setParams={setRentaParams} />}
             {tab === "planif" && <Planification aConfirmer={aConfirmer} setAConfirmer={setAConfirmer} formateurs={formateurs} setFormateurs={setFormateurs} factures={factures} />}
             {tab === "carte" && <CarteDemandes />}
+            {tab === "digiforma" && <Digiforma />}
           </main>
         </div>
       </div>
