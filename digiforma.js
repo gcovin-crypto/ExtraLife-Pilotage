@@ -79,6 +79,19 @@ const a = (schema, type, champ) => !!(schema[type] && schema[type][champ]);
 // Ne garde que les champs réellement présents dans le schéma distant.
 const champs = (schema, type, liste) => liste.filter((c) => a(schema, type, c));
 
+// Tous les champs simples d'un type : utile quand on ignore lesquels existent.
+const SCALAIRES = new Set(['SCALAR', 'ENUM', 'NON_NULL', 'LIST']);
+const tousScalaires = (schema, type) => {
+  const t = schema[type];
+  if (!t) return [];
+  return Object.keys(t).filter((k) => {
+    const f = t[k];
+    return SCALAIRES.has(f.kind) &&
+      ['String', 'Int', 'Float', 'Boolean', 'ID', 'Date', 'DateTime', 'NaiveDateTime', 'Time']
+        .includes(f.type);
+  });
+};
+
 /* ------------------------------------------- construction de la requête */
 
 function construireRequete(schema) {
@@ -94,7 +107,7 @@ function construireRequete(schema) {
     // La capacité vit sur le programme : « Limites d'effectif », min et max.
     if (a(schema, 'Program', 'capacity')) {
       const cap = champs(schema, 'ProgramCapacity',
-        ['min', 'max', 'minTrainees', 'maxTrainees', 'minimum', 'maximum', 'enabled']);
+        ['active', 'min', 'max', 'minTrainees', 'maxTrainees', 'minimum', 'maximum', 'enabled']);
       if (cap.length) p.push(`capacity { ${cap.join(' ')} }`);
     }
     bloc.push(`program { ${p.join(' ') || 'id'} }`);
@@ -108,7 +121,8 @@ function construireRequete(schema) {
 
   if (a(schema, 'TrainingSession', 'costs')) {
     const c = champs(schema, 'TrainingSessionCost',
-      ['id', 'cost', 'amount', 'value', 'type', 'name', 'title', 'label', 'quantity', 'unitPrice']);
+      ['id', 'cost', 'costIndependant', 'costIndividual', 'costMode', 'description',
+       'monthly', 'type', 'vat', 'amount', 'value', 'name', 'quantity', 'unitPrice']);
     if (c.length) bloc.push(`costs { ${c.join(' ')} }`);
   }
 
@@ -123,12 +137,14 @@ function construireRequete(schema) {
       ['id', 'number', 'date', 'total', 'totalHt', 'totalTtc', 'prefix', 'paid', 'balance']);
     const sous = [];
     if (a(schema, 'Invoice', 'items')) {
-      const it = champs(schema, 'InvoiceItem', ['id', 'quantity', 'unitPrice', 'total', 'vat', 'name', 'title']);
+      const it = tousScalaires(schema, 'InvoiceItem');
       if (it.length) sous.push(`items { ${it.join(' ')} }`);
     }
-    if (a(schema, 'Invoice', 'payments')) {
-      const pa = champs(schema, 'InvoicePayment', ['id', 'amount', 'date', 'mode']);
-      if (pa.length) sous.push(`payments { ${pa.join(' ')} }`);
+    const cleReglements = a(schema, 'Invoice', 'invoicePayments') ? 'invoicePayments'
+      : a(schema, 'Invoice', 'payments') ? 'payments' : null;
+    if (cleReglements) {
+      const pa = tousScalaires(schema, 'InvoicePayment');
+      if (pa.length) sous.push(`${cleReglements} { ${pa.join(' ')} }`);
     }
     if (inv.length || sous.length) bloc.push(`invoices { ${[...inv, ...sous].join(' ')} }`);
   }
@@ -142,7 +158,7 @@ function construireRequete(schema) {
   }
 
   if (a(schema, 'TrainingSession', 'evaluationScore')) {
-    const ev = champs(schema, 'EvaluationsScores', ['score', 'average', 'value', 'type', 'name']);
+    const ev = tousScalaires(schema, 'EvaluationsScores');
     if (ev.length) bloc.push(`evaluationScore { ${ev.join(' ')} }`);
   }
 
@@ -179,7 +195,7 @@ function totalCouts(costs) {
   if (!Array.isArray(costs)) return 0;
   return costs.reduce((t, c) => {
     if (!c) return t;
-    const v = c.cost ?? c.amount ?? c.value
+    const v = c.cost ?? c.costIndependant ?? c.costIndividual ?? c.amount ?? c.value
       ?? (c.quantity != null && c.unitPrice != null ? nombre(c.quantity) * nombre(c.unitPrice) : 0);
     return t + nombre(v);
   }, 0);
@@ -189,9 +205,10 @@ function totalCouts(costs) {
 function coutFormateur(costs) {
   if (!Array.isArray(costs)) return 0;
   return costs.reduce((t, c) => {
-    const lib = `${(c && (c.type || c.name || c.title || c.label)) || ''}`.toLowerCase();
-    if (!/formateur|instructor|intervenant/.test(lib)) return t;
-    const v = c.cost ?? c.amount ?? c.value ?? 0;
+    if (!c) return t;
+    const lib = `${c.type || ''} ${c.description || ''} ${c.name || ''}`.toLowerCase();
+    if (!/formateur|instructor|intervenant|trainer/.test(lib)) return t;
+    const v = c.cost ?? c.costIndependant ?? c.costIndividual ?? c.amount ?? c.value ?? 0;
     return t + nombre(v);
   }, 0);
 }
@@ -206,8 +223,9 @@ function totalFactures(invoices) {
       ht += f.items.reduce((t, i) => t + (i.total != null ? nombre(i.total)
         : nombre(i.quantity) * nombre(i.unitPrice)), 0);
     else if (f.total != null) ht += nombre(f.total);
-    if (Array.isArray(f.payments))
-      encaisse += f.payments.reduce((t, p) => t + nombre(p && p.amount), 0);
+    const regl = f.invoicePayments || f.payments;
+    if (Array.isArray(regl))
+      encaisse += regl.reduce((t, p) => t + nombre(p && (p.amount ?? p.value ?? p.total)), 0);
   });
   return { ht, encaisse, nb: invoices.length };
 }
@@ -230,10 +248,20 @@ function heuresTotales(slots) {
   return connus ? Math.round(h * 10) / 10 : null;
 }
 
+// Les noms de champs des scores varient. On retient la première valeur
+// numérique plausible, en excluant les identifiants et les compteurs.
+const EXCLUS = /^(id|count|nb|total_?count|questions?_?count)$/i;
 function satisfaction(ev) {
-  if (!Array.isArray(ev) || !ev.length) return null;
-  const vals = ev.map((e) => e && (e.score ?? e.average ?? e.value))
-    .map(Number).filter(Number.isFinite);
+  const liste = Array.isArray(ev) ? ev : ev ? [ev] : [];
+  const vals = [];
+  liste.forEach((e) => {
+    if (!e || typeof e !== 'object') { const n = Number(e); if (Number.isFinite(n)) vals.push(n); return; }
+    Object.entries(e).forEach(([k, v]) => {
+      if (EXCLUS.test(k)) return;
+      const n = Number(v);
+      if (Number.isFinite(n) && n > 0 && n <= 100) vals.push(n);
+    });
+  });
   if (!vals.length) return null;
   return Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10;
 }
@@ -242,7 +270,7 @@ function satisfaction(ev) {
 function capacite(s) {
   const c = s && s.program && s.program.capacity;
   if (!c) return null;
-  if (c.enabled === false) return null;
+  if (c.active === false || c.enabled === false) return null;
   const v = c.max ?? c.maxTrainees ?? c.maximum;
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? n : null;

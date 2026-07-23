@@ -136,6 +136,22 @@ router.get('/api/digiforma/diagnostic', requireRole('admin'), async (req, res) =
             ${l('Satisfaction', n.satisfaction)}${l('État', n.etat)}</div>`;
         }).join('');
       if (!brut.length) apercu += '<p style="color:#667085">Aucune session retournée par Digiforma.</p>';
+      // Relevé brut : quelques champs restent ambigus (modes de coût, scores).
+      // On les affiche tels quels plutôt que de les interpréter à l'aveugle.
+      const ech = brut.find((x) => (x.costs && x.costs.length) || x.evaluationScore) || brut[0];
+      if (ech) {
+        const bloc = (titre, val) => `<div style="margin-bottom:12px">
+          <div style="font-weight:600;font-size:12.5px;margin-bottom:4px">${titre}</div>
+          <pre style="background:#f8f9fb;border:1px solid #e6e9ee;border-radius:8px;padding:10px;
+            font-size:11.5px;overflow-x:auto;margin:0">${esc(JSON.stringify(val, null, 1) || 'null')}</pre></div>`;
+        apercu += `<h3 style="margin-top:30px">Relevé brut — à vérifier</h3>
+          <p style="color:#667085;font-size:13px">Ces valeurs ne sont pas encore interprétées.
+          Transmettez ce bloc pour que le calcul des coûts et de la satisfaction soit ajusté.</p>` +
+          bloc('costs', ech.costs) +
+          bloc('evaluationScore', ech.evaluationScore) +
+          bloc('invoices[0]', (ech.invoices || [])[0]) +
+          bloc('program.capacity', ech.program && ech.program.capacity);
+      }
     } catch (e) {
       apercu = ko(`La requête de session a échoué : ${esc(e.message)}`);
     }
