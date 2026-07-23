@@ -133,7 +133,9 @@ router.get('/api/digiforma/diagnostic', requireRole('admin'), async (req, res) =
             <div style="font-weight:700;margin-bottom:6px">${esc(n.nom || n.code || n.digiformaId)}</div>
             ${l('Date', n.date)}${l('Programme', n.programme)}${l('Client', n.client)}
             ${l('Formateur', n.formateur)}${l('Apprenants', n.nbParticipants)}
-            ${l('Durée (h)', n.heures)}${l('CA HT', n.montantHT)}${l('Coût direct', n.coutVar)}
+            ${l('Durée (h)', n.heures)}${l('Capacité', n.placesMax)}
+            ${l('CA HT', n.montantHT)}${l('  source du CA', n.sourceCA)}
+            ${l('Coût direct', n.coutVar)}${l('  mode de coût', (n.modesCout || []).join(', '))}
             ${l('Satisfaction', n.satisfaction)}${l('État', n.etat)}</div>`;
         }).join('');
       if (!brut.length) apercu += '<p style="color:#667085">Aucune session retournée par Digiforma.</p>';
@@ -149,6 +151,7 @@ router.get('/api/digiforma/diagnostic', requireRole('admin'), async (req, res) =
           <p style="color:#667085;font-size:13px">Ces valeurs ne sont pas encore interprétées.
           Transmettez ce bloc pour que le calcul des coûts et de la satisfaction soit ajusté.</p>` +
           bloc('costs', ech.costs) +
+          bloc('customers[0]', (ech.customers || [])[0]) +
           bloc('evaluationScore', ech.evaluationScore) +
           bloc('invoices[0]', (ech.invoices || [])[0]) +
           bloc('program.capacity', ech.program && ech.program.capacity);

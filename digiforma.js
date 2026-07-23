@@ -192,10 +192,19 @@ function construireRequete(schema) {
   }
 
   if (a(schema, 'TrainingSession', 'customers')) {
-    const cu = champs(schema, 'Customer', ['id', 'name', 'type']);
+    const cu = champs(schema, 'Customer', ['id', 'name', 'type', 'specialPrice', 'crmStatus']);
     const sous = [];
     if (a(schema, 'Customer', 'company'))
       sous.push(`company { ${champs(schema, 'Company', ['id', 'name', 'city', 'zipCode', 'zipcode']).join(' ') || 'id name'} }`);
+    // Le prix de vente est porté par le client de la session.
+    if (a(schema, 'Customer', 'costs')) {
+      const cc = tousScalaires(schema, 'CustomerCost');
+      if (cc.length) sous.push(`costs { ${cc.join(' ')} }`);
+    }
+    if (a(schema, 'Customer', 'trainees')) {
+      const ct = champs(schema, 'CustomerTrainee', ['id']);
+      if (ct.length) sous.push(`trainees { ${ct.join(' ')} }`);
+    }
     if (cu.length || sous.length) bloc.push(`customers { ${[...cu, ...sous].join(' ')} }`);
   }
 
@@ -247,26 +256,33 @@ async function recupererSessions({ max = 2000, onProgress } = {}) {
 
 const nombre = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 
-// Somme des postes de coût, en tolérant plusieurs noms de champ possibles.
-function totalCouts(costs) {
+// Montant réel d'un poste de coût. Digiforma stocke un tarif et un mode :
+// « per_trainee » est un tarif par stagiaire, à multiplier par l'effectif.
+// Ignorer le mode revient à diviser le coût par le nombre d'apprenants.
+function montantCout(c, ctx) {
+  if (!c) return 0;
+  const base = nombre(c.cost ?? c.costIndependant ?? c.costIndividual ?? c.amount ?? c.value ?? 0);
+  if (!base) return 0;
+  const mode = String(c.costMode || '').toLowerCase();
+  if (/trainee|stagiaire|participant|apprenant/.test(mode)) return base * (ctx.apprenants || 0);
+  if (/hour|heure|horaire/.test(mode)) return base * (ctx.heures || 0);
+  if (/day|jour/.test(mode)) return base * (ctx.jours || 0);
+  return base;   // per_session, forfait, global…
+}
+
+function totalCouts(costs, ctx) {
   if (!Array.isArray(costs)) return 0;
-  return costs.reduce((t, c) => {
-    if (!c) return t;
-    const v = c.cost ?? c.costIndependant ?? c.costIndividual ?? c.amount ?? c.value
-      ?? (c.quantity != null && c.unitPrice != null ? nombre(c.quantity) * nombre(c.unitPrice) : 0);
-    return t + nombre(v);
-  }, 0);
+  return costs.reduce((t, c) => t + montantCout(c, ctx), 0);
 }
 
 // Coût imputable au formateur : repéré sur le libellé du poste.
-function coutFormateur(costs) {
+function coutFormateur(costs, ctx) {
   if (!Array.isArray(costs)) return 0;
   return costs.reduce((t, c) => {
     if (!c) return t;
     const lib = `${c.type || ''} ${c.description || ''} ${c.name || ''}`.toLowerCase();
-    if (!/formateur|instructor|intervenant|trainer/.test(lib)) return t;
-    const v = c.cost ?? c.costIndependant ?? c.costIndividual ?? c.amount ?? c.value ?? 0;
-    return t + nombre(v);
+    if (!/formateur|instructor|intervenant|trainer|training/.test(lib)) return t;
+    return t + montantCout(c, ctx);
   }, 0);
 }
 
@@ -349,11 +365,30 @@ function nomFormateur(s) {
 }
 
 // Traduit une session Digiforma dans la forme utilisée par la plateforme.
+// Prix de vente porté par les clients de la session (CustomerCost).
+function totalClients(customers, ctx) {
+  if (!Array.isArray(customers)) return 0;
+  return customers.reduce((t, cu) => {
+    if (!cu) return t;
+    if (Array.isArray(cu.costs) && cu.costs.length)
+      return t + cu.costs.reduce((x, c) => x + montantCout(c, ctx), 0);
+    return t + nombre(cu.specialPrice);
+  }, 0);
+}
+
 function normaliser(s) {
-  const { ht, encaisse, nb } = totalFactures(s.invoices);
-  const couts = totalCouts(s.costs);
+  const apprenants = Array.isArray(s.trainees) ? s.trainees.length : 0;
   const heures = heuresTotales(s.trainingSessionSlots);
+  const jours = Array.isArray(s.trainingSessionSlots)
+    ? new Set(s.trainingSessionSlots.map((x) => x && x.date).filter(Boolean)).size : 0;
+  const ctx = { apprenants, heures, jours };
+
+  const { ht, encaisse, nb } = totalFactures(s.invoices);
+  const htClients = totalClients(s.customers, ctx);
+  const couts = totalCouts(s.costs, ctx);
   const date = (s.startDate || '').slice(0, 10);
+  const modesCout = Array.isArray(s.costs)
+    ? [...new Set(s.costs.map((c) => c && c.costMode).filter(Boolean))] : [];
   return {
     digiformaId: String(s.id),
     nom: s.name || s.code || '',
@@ -364,14 +399,16 @@ function normaliser(s) {
     programme: (s.program && s.program.name) || '',
     client: nomClient(s),
     formateur: nomFormateur(s),
-    nbParticipants: Array.isArray(s.trainees) ? s.trainees.length : null,
+    nbParticipants: apprenants || null,
     placesMax: capacite(s),
     heures,
-    montantHT: ht || null,
+    jours: jours || null,
+    montantHT: ht || htClients || null,
+    sourceCA: ht ? 'factures' : htClients ? 'clients' : null,
     encaisse: encaisse || null,
     nbFactures: nb,
     coutVar: couts || null,
-    cFormateur: coutFormateur(s.costs) || null,
+    cFormateur: coutFormateur(s.costs, ctx) || null,
     benefice: s.benefits != null ? nombre(s.benefits) : null,
     satisfaction: satisfaction(s.evaluationScore),
     etat: s.pipelineState || '',
@@ -380,6 +417,7 @@ function normaliser(s) {
     sousTraitance: !!s.contracted,
     archivee: !!s.frozenAt,
     lieu: s.placeName || s.place || s.address || '',
+    modesCout,
     majDigiforma: s.updatedAt || null,
   };
 }
