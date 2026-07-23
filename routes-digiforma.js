@@ -153,7 +153,28 @@ router.get('/api/digiforma/diagnostic', requireRole('admin'), async (req, res) =
           bloc('program.capacity', ech.program && ech.program.capacity);
       }
     } catch (e) {
-      apercu = ko(`La requête de session a échoué : ${esc(e.message)}`);
+      apercu = ko(`La requête de session a échoué.<br><br><b>Message renvoyé par Digiforma :</b><br>` +
+        `<code style="font-size:12.5px">${esc(e.message)}</code>`);
+      // Diagnostic fin : quel bloc de la requête pose problème ?
+      try {
+        const pagination = await D.decouvrirEntree('Pagination');
+        apercu += `<h3 style="margin-top:24px">Champs acceptés par « Pagination »</h3>
+          <pre style="background:#f8f9fb;border:1px solid #e6e9ee;border-radius:8px;padding:10px;
+            font-size:12px;margin:0">${esc(JSON.stringify(pagination, null, 1))}</pre>`;
+      } catch { /* sans importance */ }
+      try {
+        const tests = await D.testerBlocs(schema);
+        apercu += `<h3 style="margin-top:24px">Test bloc par bloc</h3>
+          <table style="width:100%;border-collapse:collapse;font-size:13px">` +
+          tests.map((t) => `<tr>
+            <td style="padding:6px 10px;border-bottom:1px solid #eef0f4"><code>${esc(t.bloc)}</code></td>
+            <td style="padding:6px 10px;border-bottom:1px solid #eef0f4;color:${t.ok ? '#027a48' : '#b42318'}">
+              ${t.ok ? 'accepté' : 'refusé'}</td>
+            <td style="padding:6px 10px;border-bottom:1px solid #eef0f4;font-size:11.5px;color:#667085">
+              ${esc(t.message || '')}</td></tr>`).join('') + '</table>';
+      } catch (e2) {
+        apercu += `<p style="color:#667085;font-size:13px">Test bloc par bloc impossible : ${esc(e2.message)}</p>`;
+      }
     }
 
     res.type('html').send(page(

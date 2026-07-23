@@ -12,14 +12,18 @@ const TOKEN = () => process.env.DIGIFORMA_TOKEN || '';
 const PAGE = 100;
 
 class DigiformaError extends Error {
-  constructor(message, details) { super(message); this.details = details; }
+  constructor(code, message, details) {
+    super(message || code);
+    this.code = code;
+    this.details = details;
+  }
 }
 
 /* ------------------------------------------------------------- transport */
 
 async function gql(query, variables = {}) {
   if (!TOKEN()) throw new DigiformaError('token_absent',
-    'La variable DIGIFORMA_TOKEN n\'est pas renseignée.');
+    "La variable DIGIFORMA_TOKEN n'est pas renseignée.");
 
   let r;
   try {
@@ -75,6 +79,42 @@ async function decouvrirSchema() {
 }
 
 const a = (schema, type, champ) => !!(schema[type] && schema[type][champ]);
+
+// Les champs d'un objet d'entrée (Pagination, filtres...) ne sont pas devinables.
+async function decouvrirEntree(nom) {
+  const d = await gql(`query { __type(name: "${nom}") { name inputFields { name type { kind name ofType { kind name } } } } }`);
+  const t = d && d.__type;
+  if (!t) return null;
+  const out = {};
+  (t.inputFields || []).forEach((f) => {
+    const noyau = f.type.ofType || f.type;
+    out[f.name] = noyau.name || f.type.name;
+  });
+  return out;
+}
+
+// Essaie chaque bloc facultatif isolément pour identifier celui qui échoue.
+async function testerBlocs(schema) {
+  const base = champs(schema, 'TrainingSession', ['id', 'name', 'startDate']);
+  const complet = construireRequete(schema);
+  const blocs = (complet.match(/^\s{4}\w+ \{[\s\S]*?^\s{4}\}/gm) || [])
+    .concat(complet.split('\n').filter((l) => /^\s{4}\w+ \{ .* \}$/.test(l)));
+  const resultats = [];
+  for (const b of blocs) {
+    const nom = (b.trim().match(/^(\w+)/) || [])[1] || '?';
+    const q = `query T { trainingSessions(pagination: {page: 0, perPage: 1}) { ${base.join(' ')} ${b.trim()} } }`;
+    try { await gql(q); resultats.push({ bloc: nom, ok: true }); }
+    catch (e) { resultats.push({ bloc: nom, ok: false, message: e.message }); }
+  }
+  // La requête minimale, sans aucun bloc
+  try {
+    await gql(`query T { trainingSessions(pagination: {page: 0, perPage: 1}) { ${base.join(' ')} } }`);
+    resultats.unshift({ bloc: '(champs simples)', ok: true });
+  } catch (e) {
+    resultats.unshift({ bloc: '(champs simples)', ok: false, message: e.message });
+  }
+  return resultats;
+}
 
 // Ne garde que les champs réellement présents dans le schéma distant.
 const champs = (schema, type, liste) => liste.filter((c) => a(schema, type, c));
@@ -328,6 +368,6 @@ function normaliser(s) {
 }
 
 module.exports = {
-  gql, decouvrirSchema, construireRequete, recupererSessions, normaliser,
-  DigiformaError, ENDPOINT,
+  gql, decouvrirSchema, decouvrirEntree, testerBlocs, construireRequete,
+  recupererSessions, normaliser, DigiformaError, ENDPOINT,
 };
