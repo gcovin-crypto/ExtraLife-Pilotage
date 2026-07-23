@@ -121,7 +121,8 @@ router.get('/api/digiforma/diagnostic', requireRole('admin'), async (req, res) =
 
     let apercu = '';
     try {
-      const d = await D.gql(D.construireRequete(schema), { pagination: { page: 0, perPage: 3 } });
+      await D.trouverClePagination();
+      const d = await D.gql(D.construireRequete(schema), { pagination: D.pagination(0, 3) });
       const brut = (d && d.trainingSessions) || [];
       apercu = `<h3 style="margin-top:30px">Aperçu de ${brut.length} session(s)</h3>` +
         brut.map((s) => {

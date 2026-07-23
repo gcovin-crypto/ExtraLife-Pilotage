@@ -96,19 +96,21 @@ async function decouvrirEntree(nom) {
 // Essaie chaque bloc facultatif isolément pour identifier celui qui échoue.
 async function testerBlocs(schema) {
   const base = champs(schema, 'TrainingSession', ['id', 'name', 'startDate']);
+  await trouverClePagination();
   const complet = construireRequete(schema);
   const blocs = (complet.match(/^\s{4}\w+ \{[\s\S]*?^\s{4}\}/gm) || [])
     .concat(complet.split('\n').filter((l) => /^\s{4}\w+ \{ .* \}$/.test(l)));
   const resultats = [];
   for (const b of blocs) {
     const nom = (b.trim().match(/^(\w+)/) || [])[1] || '?';
-    const q = `query T { trainingSessions(pagination: {page: 0, perPage: 1}) { ${base.join(' ')} ${b.trim()} } }`;
-    try { await gql(q); resultats.push({ bloc: nom, ok: true }); }
+    const q = `query T($p: Pagination) { trainingSessions(pagination: $p) { ${base.join(' ')} ${b.trim()} } }`;
+    try { await gql(q, { p: pagination(0, 1) }); resultats.push({ bloc: nom, ok: true }); }
     catch (e) { resultats.push({ bloc: nom, ok: false, message: e.message }); }
   }
   // La requête minimale, sans aucun bloc
   try {
-    await gql(`query T { trainingSessions(pagination: {page: 0, perPage: 1}) { ${base.join(' ')} } }`);
+    await gql(`query T($p: Pagination) { trainingSessions(pagination: $p) { ${base.join(' ')} } }`,
+      { p: pagination(0, 1) });
     resultats.unshift({ bloc: '(champs simples)', ok: true });
   } catch (e) {
     resultats.unshift({ bloc: '(champs simples)', ok: false, message: e.message });
@@ -211,12 +213,27 @@ function construireRequete(schema) {
 
 /* -------------------------------------------------- récupération paginée */
 
+// Le nom du champ « taille de page » varie d'une API à l'autre : on le
+// découvre au lieu de le supposer. Chez Digiforma il s'agit de « size ».
+let clePagination = null;
+async function trouverClePagination() {
+  if (clePagination) return clePagination;
+  try {
+    const champsEntree = await decouvrirEntree('Pagination');
+    clePagination = ['size', 'perPage', 'pageSize', 'limit', 'first']
+      .find((c) => champsEntree && champsEntree[c]) || 'size';
+  } catch { clePagination = 'size'; }
+  return clePagination;
+}
+const pagination = (page, taille) => ({ page, [clePagination || 'size']: taille });
+
 async function recupererSessions({ max = 2000, onProgress } = {}) {
   const schema = await decouvrirSchema();
+  await trouverClePagination();
   const requete = construireRequete(schema);
   const tout = [];
   for (let page = 0; tout.length < max; page++) {
-    const d = await gql(requete, { pagination: { page, perPage: PAGE } });
+    const d = await gql(requete, { pagination: pagination(page, PAGE) });
     const lot = (d && d.trainingSessions) || [];
     tout.push(...lot);
     if (onProgress) onProgress(tout.length);
@@ -368,6 +385,6 @@ function normaliser(s) {
 }
 
 module.exports = {
-  gql, decouvrirSchema, decouvrirEntree, testerBlocs, construireRequete,
+  gql, decouvrirSchema, decouvrirEntree, testerBlocs, construireRequete, trouverClePagination, pagination,
   recupererSessions, normaliser, DigiformaError, ENDPOINT,
 };
